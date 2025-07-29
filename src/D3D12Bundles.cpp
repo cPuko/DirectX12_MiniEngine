@@ -12,6 +12,7 @@
 #include "stdafx.h"
 #include "D3D12Bundles.h"
 #include "occcity.h"
+#include <DirectXTex.h>
 
 D3D12Bundles::D3D12Bundles(UINT width, UINT height, std::wstring name) :
     DXSample(width, height, name),
@@ -134,8 +135,8 @@ void D3D12Bundles::LoadPipeline()
         // buffer view (CBV) descriptor heap.
         D3D12_DESCRIPTOR_HEAP_DESC cbvSrvHeapDesc = {};
         cbvSrvHeapDesc.NumDescriptors =
-            FrameCount * CityRowCount * CityColumnCount        // FrameCount frames * CityRowCount * CityColumnCount.
-            + 1;                                            // + 1 for the SRV.
+            FrameCount * CityRowCount * CityColumnCount        // FrameCount frames * CityRowCount * CityColumnCount + virtual texture
+            + 2;
         cbvSrvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         cbvSrvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         ThrowIfFailed(m_device->CreateDescriptorHeap(&cbvSrvHeapDesc, IID_PPV_ARGS(&m_cbvSrvHeap)));
@@ -179,7 +180,7 @@ void D3D12Bundles::LoadAssets()
         }
 
         CD3DX12_DESCRIPTOR_RANGE1 ranges[3];
-        ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
+        ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
         ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0);
         ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
 
@@ -408,6 +409,52 @@ void D3D12Bundles::LoadAssets()
 
     delete pMeshData;
 
+    // Virtual Texture
+    {
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        std::wstring filePath = L"..\\resource\\vt_test_atlas_1024.png";
+        DirectX::ScratchImage image;
+        HRESULT hr = DirectX::LoadFromWICFile(filePath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+        if (FAILED(hr)) {
+            throw std::runtime_error("Virtual Texture PNG 로드 실패");
+        }
+
+        // GPU 리소스 생성
+        hr = DirectX::CreateTexture(m_device.Get(), image.GetMetadata(), &m_virtualTexture);
+
+        if (FAILED(hr)) {
+            throw std::runtime_error("Virtual Texture 리소스 생성 실패");
+        }
+
+        // 업로드 힙 생성 및 데이터 복사
+        ComPtr<ID3D12Resource> uploadHeap;
+        const DirectX::TexMetadata& meta = image.GetMetadata();
+        UINT64 uploadBufferSize = GetRequiredIntermediateSize(m_virtualTexture.Get(), 0, (UINT)meta.mipLevels);
+
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+            D3D12_HEAP_FLAG_NONE,
+            &CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize),
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&uploadHeap)));
+
+        std::vector<D3D12_SUBRESOURCE_DATA> subresources;
+        DirectX::PrepareUpload(m_device.Get(), image.GetImages(), image.GetImageCount(), meta, subresources);
+
+        UpdateSubresources(m_commandList.Get(), m_virtualTexture.Get(), uploadHeap.Get(), 0, 0, (UINT)subresources.size(), subresources.data());
+        m_commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_virtualTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = m_virtualTexture->GetDesc().Format;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = m_virtualTexture->GetDesc().MipLevels;
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart(), 1, m_cbvSrvDescriptorSize);
+        m_device->CreateShaderResourceView(m_virtualTexture.Get(), &srvDesc, srvHandle);
+    }
+
     // Create the depth stencil view.
     {
         D3D12_DEPTH_STENCIL_VIEW_DESC depthStencilDesc = {};
@@ -568,7 +615,7 @@ void D3D12Bundles::OnKeyUp(UINT8 key)
 void D3D12Bundles::CreateFrameResources()
 {
     // Initialize each frame resource.
-    CD3DX12_CPU_DESCRIPTOR_HANDLE cbvSrvHandle(m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart(), 1, m_cbvSrvDescriptorSize);    // Move past the SRV in slot 1.
+    CD3DX12_CPU_DESCRIPTOR_HANDLE cbvSrvHandle(m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart(), 2, m_cbvSrvDescriptorSize);    // Move past the SRV in slot 1.
     for (UINT i = 0; i < FrameCount; i++)
     {
         FrameResource* pFrameResource = new FrameResource(m_device.Get(), CityRowCount, CityColumnCount);

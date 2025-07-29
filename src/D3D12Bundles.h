@@ -85,6 +85,9 @@ private:
     ComPtr<ID3D12Fence> m_fence;
     UINT64 m_fenceValue;
 
+    // Virtual texture resource.
+    ComPtr<ID3D12Resource> m_virtualTexture;
+
     void LoadPipeline();
     void LoadAssets();
     void CreateFrameResources();

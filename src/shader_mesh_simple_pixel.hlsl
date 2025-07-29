@@ -15,10 +15,11 @@ struct PSInput
     float2 uv        : TEXCOORD0;
 };
 
-Texture2D        g_txDiffuse : register(t0);
+Texture2D g_txDiffuse : register(t0);
+Texture2D g_VirtualTexture : register(t1);
 SamplerState    g_sampler : register(s0);
 
 float4 PSMain(PSInput input) : SV_TARGET
 {
-    return g_txDiffuse.Sample(g_sampler, input.uv);
+    return g_VirtualTexture.Sample(g_sampler, input.uv);
 }
